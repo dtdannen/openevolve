@@ -113,6 +113,10 @@ function loadAndRenderData(data) {
             window.updatePerformanceGraph(data.nodes);
         }
     }
+    // Render plot if iteration metrics are available
+    if (window.renderPlot && data.iteration_metrics) {
+        window.renderPlot(data.iteration_metrics);
+    }
 }
 
 if (window.STATIC_DATA) {
