@@ -165,7 +165,7 @@ class GlobalLearnings:
         syntax_patterns = [
             (r"SyntaxError: (.+)", lambda m: f"SyntaxError: {m.group(1)}"),
             (r"IndentationError: (.+)", lambda m: f"IndentationError: {m.group(1)}"),
-            (r"NameError: name '(\w+)' is not defined", lambda m: f"Undefined variable: {m.group(1)}"),
+            (r"NameError: name ['\"](\w+)['\"] is not defined", lambda m: f"Undefined variable: {m.group(1)}"),
             (r"invalid syntax", lambda m: "Invalid syntax"),
         ]
 
@@ -219,8 +219,9 @@ class GlobalLearnings:
             ):
                 continue
 
-            # Check for significant regression (>10%)
-            if parent_value > 0 and child_value < parent_value * 0.9:
+            # Check for significant regression using configurable threshold
+            threshold_multiplier = 1.0 - self.config.performance_regression_threshold
+            if parent_value > 0 and child_value < parent_value * threshold_multiplier:
                 regression_pct = ((parent_value - child_value) / parent_value) * 100
                 regressions.append(
                     f"{metric_name} decreased by {regression_pct:.1f}% "
@@ -233,8 +234,16 @@ class GlobalLearnings:
         self, parent_metrics: Dict[str, float], child_metrics: Dict[str, float]
     ) -> float:
         """Calculate overall improvement score"""
-        improvements = []
+        # Prefer combined_score if available (consistent with rest of codebase)
+        if "combined_score" in parent_metrics and "combined_score" in child_metrics:
+            parent_score = parent_metrics["combined_score"]
+            child_score = child_metrics["combined_score"]
+            if isinstance(parent_score, (int, float)) and isinstance(child_score, (int, float)):
+                if parent_score > 0:
+                    return (child_score - parent_score) / parent_score
 
+        # Fallback to averaging all metrics
+        improvements = []
         for metric_name, child_value in child_metrics.items():
             if metric_name not in parent_metrics:
                 continue
@@ -254,6 +263,15 @@ class GlobalLearnings:
             return sum(improvements) / len(improvements)
         return 0.0
 
+    def _normalize_error_description(self, description: str) -> str:
+        """Normalize error descriptions for better grouping"""
+        # Normalize container types (list/tuple/str → sequence)
+        description = re.sub(r'\b(list|tuple|str|dict)\b index', 'sequence index', description)
+        # Normalize numeric values to 'N'
+        description = re.sub(r'\b\d+\b', 'N', description)
+        # Lowercase for consistency
+        return description.lower()
+
     def _add_failure_pattern(
         self,
         pattern_type: str,
@@ -262,8 +280,9 @@ class GlobalLearnings:
         example_error: Optional[str] = None,
     ) -> None:
         """Add or update a failure pattern"""
-        # Normalize description for grouping
-        key = f"{pattern_type}:{description}"
+        # Normalize description for better grouping
+        normalized_desc = self._normalize_error_description(description)
+        key = f"{pattern_type}:{normalized_desc}"
 
         if key in self.failure_patterns:
             pattern = self.failure_patterns[key]

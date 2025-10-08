@@ -328,7 +328,15 @@ class EvolutionTraceConfig:
 
 @dataclass
 class GlobalLearningsConfig:
-    """Configuration for global learnings aggregation"""
+    """
+    Configuration for global learnings aggregation
+
+    The global learnings system tracks patterns across all islands and iterations
+    to help the LLM avoid repeated mistakes and learn from successful patterns.
+
+    Note: track_both=True will override both track_failures and track_successes,
+    enabling both types of tracking regardless of their individual values.
+    """
 
     # Enable/disable global learnings
     enabled: bool = False
@@ -344,6 +352,7 @@ class GlobalLearningsConfig:
 
     # Failure tracking thresholds
     min_failure_count: int = 3        # Minimum occurrences to report
+    performance_regression_threshold: float = 0.10  # 10% decrease = regression
     include_syntax_errors: bool = True
     include_runtime_errors: bool = True
     include_performance_regressions: bool = True
@@ -520,6 +529,7 @@ class Config:
                 "window_size": self.global_learnings.window_size,
                 "max_learnings": self.global_learnings.max_learnings,
                 "min_failure_count": self.global_learnings.min_failure_count,
+                "performance_regression_threshold": self.global_learnings.performance_regression_threshold,
                 "include_syntax_errors": self.global_learnings.include_syntax_errors,
                 "include_runtime_errors": self.global_learnings.include_runtime_errors,
                 "include_performance_regressions": self.global_learnings.include_performance_regressions,
