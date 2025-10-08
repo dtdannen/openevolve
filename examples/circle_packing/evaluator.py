@@ -12,6 +12,7 @@ import tempfile
 import traceback
 import sys
 import pickle
+from openevolve.evaluation_result import EvaluationResult
 
 
 class TimeoutError(Exception):
@@ -83,7 +84,7 @@ def run_with_timeout(program_path, timeout_seconds=20):
         timeout_seconds: Maximum execution time in seconds
 
     Returns:
-        centers, radii, sum_radii tuple from the program
+        Tuple of (centers, radii, sum_radii, stdout, stderr)
     """
     # Create a temporary file to execute
     with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_file:
@@ -147,10 +148,14 @@ except Exception as e:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
             exit_code = process.returncode
 
+            # Decode output for artifacts
+            stdout_str = stdout.decode() if stdout else ""
+            stderr_str = stderr.decode() if stderr else ""
+
             # Always print output for debugging purposes
-            print(f"Subprocess stdout: {stdout.decode()}")
-            if stderr:
-                print(f"Subprocess stderr: {stderr.decode()}")
+            print(f"Subprocess stdout: {stdout_str}")
+            if stderr_str:
+                print(f"Subprocess stderr: {stderr_str}")
 
             # Still raise an error for non-zero exit codes, but only after printing the output
             if exit_code != 0:
@@ -165,7 +170,7 @@ except Exception as e:
                 if "error" in results:
                     raise RuntimeError(f"Program execution failed: {results['error']}")
 
-                return results["centers"], results["radii"], results["sum_radii"]
+                return results["centers"], results["radii"], results["sum_radii"], stdout_str, stderr_str
             else:
                 raise RuntimeError("Results file not found")
 
@@ -191,10 +196,13 @@ def evaluate(program_path):
         program_path: Path to the program file
 
     Returns:
-        Dictionary of metrics
+        EvaluationResult with metrics and artifacts
     """
     # Target value from the paper
     TARGET_VALUE = 2.635  # AlphaEvolve result for n=26
+
+    stdout = ""
+    stderr = ""
 
     try:
         # For constructor-based approaches, a single evaluation is sufficient
@@ -202,7 +210,7 @@ def evaluate(program_path):
         start_time = time.time()
 
         # Use subprocess to run with timeout
-        centers, radii, reported_sum = run_with_timeout(
+        centers, radii, reported_sum, stdout, stderr = run_with_timeout(
             program_path, timeout_seconds=600  # Single timeout
         )
 
@@ -218,13 +226,16 @@ def evaluate(program_path):
         # Check for NaN values before validation
         if np.isnan(centers).any() or np.isnan(radii).any():
             print("NaN values detected in solution")
-            return {
-                "sum_radii": 0.0,
-                "target_ratio": 0.0,
-                "validity": 0.0,
-                "eval_time": float(time.time() - start_time),
-                "combined_score": 0.0,
-            }
+            return EvaluationResult(
+                metrics={
+                    "sum_radii": 0.0,
+                    "target_ratio": 0.0,
+                    "validity": 0.0,
+                    "eval_time": float(time.time() - start_time),
+                    "combined_score": 0.0,
+                },
+                artifacts={"stdout": stdout, "stderr": stderr}
+            )
 
         # Validate solution
         valid = validate_packing(centers, radii)
@@ -257,35 +268,48 @@ def evaluate(program_path):
             f"Evaluation: valid={valid}, sum_radii={sum_radii:.6f}, target={TARGET_VALUE}, ratio={target_ratio:.6f}, time={eval_time:.2f}s"
         )
 
-        return {
-            "sum_radii": float(sum_radii),
-            "target_ratio": float(target_ratio),
-            "validity": float(validity),
-            "eval_time": float(eval_time),
-            "combined_score": float(combined_score),
-        }
+        return EvaluationResult(
+            metrics={
+                "sum_radii": float(sum_radii),
+                "target_ratio": float(target_ratio),
+                "validity": float(validity),
+                "eval_time": float(eval_time),
+                "combined_score": float(combined_score),
+            },
+            artifacts={"stdout": stdout, "stderr": stderr}
+        )
 
     except Exception as e:
-        print(f"Evaluation failed completely: {str(e)}")
+        error_msg = f"Evaluation failed completely: {str(e)}"
+        print(error_msg)
         traceback.print_exc()
-        return {
-            "sum_radii": 0.0,
-            "target_ratio": 0.0,
-            "validity": 0.0,
-            "eval_time": 0.0,
-            "combined_score": 0.0,
-        }
+        return EvaluationResult(
+            metrics={
+                "sum_radii": 0.0,
+                "target_ratio": 0.0,
+                "validity": 0.0,
+                "eval_time": 0.0,
+                "combined_score": 0.0,
+            },
+            artifacts={"stderr": f"{error_msg}\n{traceback.format_exc()}"}
+        )
 
 
 # Stage-based evaluation for cascade evaluation
 def evaluate_stage1(program_path):
     """
     First stage evaluation - quick validation check
+
+    Returns:
+        EvaluationResult with metrics and artifacts
     """
+    stdout = ""
+    stderr = ""
+
     try:
         # Use the simplified subprocess approach
         try:
-            centers, radii, sum_radii = run_with_timeout(program_path, timeout_seconds=600)
+            centers, radii, sum_radii, stdout, stderr = run_with_timeout(program_path, timeout_seconds=600)
 
             # Ensure centers and radii are numpy arrays
             if not isinstance(centers, np.ndarray):
@@ -297,7 +321,10 @@ def evaluate_stage1(program_path):
             shape_valid = centers.shape == (26, 2) and radii.shape == (26,)
             if not shape_valid:
                 print(f"Invalid shapes: centers={centers.shape}, radii={radii.shape}")
-                return {"validity": 0.0, "error": "Invalid shapes"}
+                return EvaluationResult(
+                    metrics={"validity": 0.0, "combined_score": 0.0},
+                    artifacts={"stdout": stdout, "stderr": f"{stderr}\nInvalid shapes"}
+                )
 
             valid = validate_packing(centers, radii)
 
@@ -311,25 +338,40 @@ def evaluate_stage1(program_path):
             combined_score = (actual_sum / target) if valid else 0.0
 
             # Return evaluation metrics
-            return {
-                "validity": 1.0 if valid else 0.0,
-                "sum_radii": float(actual_sum),
-                "target_ratio": float(actual_sum / target if valid else 0.0),
-                "combined_score": float(combined_score),
-            }
+            return EvaluationResult(
+                metrics={
+                    "validity": 1.0 if valid else 0.0,
+                    "sum_radii": float(actual_sum),
+                    "target_ratio": float(actual_sum / target if valid else 0.0),
+                    "combined_score": float(combined_score),
+                },
+                artifacts={"stdout": stdout, "stderr": stderr}
+            )
 
         except TimeoutError as e:
-            print(f"Stage 1 evaluation timed out: {e}")
-            return {"validity": 0.0, "combined_score": 0.0, "error": "Timeout"}
+            error_msg = f"Stage 1 evaluation timed out: {e}"
+            print(error_msg)
+            return EvaluationResult(
+                metrics={"validity": 0.0, "combined_score": 0.0},
+                artifacts={"stderr": error_msg}
+            )
         except Exception as e:
-            print(f"Stage 1 evaluation failed: {e}")
+            error_msg = f"Stage 1 evaluation failed: {e}"
+            print(error_msg)
             print(traceback.format_exc())
-            return {"validity": 0.0, "combined_score": 0.0, "error": str(e)}
+            return EvaluationResult(
+                metrics={"validity": 0.0, "combined_score": 0.0},
+                artifacts={"stderr": f"{error_msg}\n{traceback.format_exc()}"}
+            )
 
     except Exception as e:
-        print(f"Stage 1 evaluation failed completely: {e}")
+        error_msg = f"Stage 1 evaluation failed completely: {e}"
+        print(error_msg)
         print(traceback.format_exc())
-        return {"validity": 0.0, "combined_score": 0.0, "error": str(e)}
+        return EvaluationResult(
+            metrics={"validity": 0.0, "combined_score": 0.0},
+            artifacts={"stderr": f"{error_msg}\n{traceback.format_exc()}"}
+        )
 
 
 def evaluate_stage2(program_path):

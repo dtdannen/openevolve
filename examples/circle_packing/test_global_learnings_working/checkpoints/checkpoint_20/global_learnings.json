@@ -1,0 +1,61 @@
+{
+  "failure_patterns": {
+    "performance_regression:validity decreased by n.n% (n.n \u2192 n.n)": {
+      "pattern_type": "performance_regression",
+      "description": "validity decreased by 100.0% (1.000 \u2192 0.000)",
+      "count": 1,
+      "first_seen": 1,
+      "last_seen": 1,
+      "example_error": null
+    },
+    "performance_regression:sum_radii decreased by n.n% (n.n \u2192 n.n)": {
+      "pattern_type": "performance_regression",
+      "description": "sum_radii decreased by 100.0% (0.960 \u2192 0.000)",
+      "count": 2,
+      "first_seen": 1,
+      "last_seen": 6,
+      "example_error": null
+    },
+    "performance_regression:target_ratio decreased by n.n% (n.n \u2192 n.n)": {
+      "pattern_type": "performance_regression",
+      "description": "target_ratio decreased by 100.0% (0.364 \u2192 0.000)",
+      "count": 2,
+      "first_seen": 1,
+      "last_seen": 6,
+      "example_error": null
+    },
+    "performance_regression:combined_score decreased by n.n% (n.n \u2192 n.n)": {
+      "pattern_type": "performance_regression",
+      "description": "combined_score decreased by 100.0% (0.364 \u2192 0.000)",
+      "count": 2,
+      "first_seen": 1,
+      "last_seen": 6,
+      "example_error": null
+    }
+  },
+  "success_patterns": {},
+  "iteration_history": [
+    3,
+    4,
+    1,
+    2,
+    5,
+    6,
+    10,
+    8,
+    7,
+    9,
+    13,
+    12,
+    11,
+    14,
+    16,
+    17,
+    15,
+    18,
+    21,
+    19,
+    20
+  ],
+  "last_update_iteration": 20
+}

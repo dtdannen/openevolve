@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from openevolve.config import GlobalLearningsConfig
 
@@ -28,6 +28,12 @@ class FailurePattern:
     first_seen: int = 0  # iteration number
     last_seen: int = 0
     example_error: Optional[str] = None
+    # Code context for LLM summarization
+    parent_code: Optional[str] = None
+    child_code: Optional[str] = None
+    code_diff: Optional[str] = None
+    parent_metrics: Optional[Dict[str, float]] = None
+    child_metrics: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -46,6 +52,12 @@ class SuccessPattern:
     avg_improvement: float = 0.0
     first_seen: int = 0
     last_seen: int = 0
+    # Code context for LLM summarization
+    parent_code: Optional[str] = None
+    child_code: Optional[str] = None
+    code_diff: Optional[str] = None
+    parent_metrics: Optional[Dict[str, float]] = None
+    child_metrics: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -60,12 +72,14 @@ class GlobalLearnings:
     Tracks and aggregates learnings from evolution across all islands and iterations
     """
 
-    def __init__(self, config: GlobalLearningsConfig):
+    def __init__(self, config: GlobalLearningsConfig, llm_ensemble=None):
         self.config = config
         self.failure_patterns: Dict[str, FailurePattern] = {}
         self.success_patterns: Dict[str, SuccessPattern] = {}
         self.iteration_history: List[int] = []  # Track which iterations we've seen
         self.last_update_iteration: int = 0
+        self.llm_ensemble = llm_ensemble  # For generating summaries
+        self.summary_cache: Dict[str, str] = {}  # Cache LLM summaries
 
         logger.info(f"Initialized GlobalLearnings (enabled={config.enabled})")
 
@@ -108,29 +122,46 @@ class GlobalLearnings:
         if not artifacts:
             return
 
+        # Extract code context
+        child_program = getattr(result, "child_program", None)
+        parent = getattr(result, "parent", None)
+        child_code = getattr(child_program, "code", None) if child_program else None
+        parent_code = getattr(parent, "code", None) if parent else None
+        code_diff = getattr(child_program, "metadata", {}).get("changes", None) if child_program else None
+        child_metrics = getattr(result, "child_metrics", None)
+        parent_metrics = getattr(parent, "metrics", None) if parent else None
+
         # Extract syntax errors
         if self.config.include_syntax_errors:
             syntax_errors = self._extract_syntax_errors(artifacts)
             for error_desc in syntax_errors:
-                self._add_failure_pattern("syntax", error_desc, iteration, error_desc)
+                self._add_failure_pattern(
+                    "syntax", error_desc, iteration, error_desc,
+                    parent_code=parent_code, child_code=child_code, code_diff=code_diff,
+                    parent_metrics=parent_metrics, child_metrics=child_metrics
+                )
 
         # Extract runtime errors
         if self.config.include_runtime_errors:
             runtime_errors = self._extract_runtime_errors(artifacts)
             for error_desc in runtime_errors:
-                self._add_failure_pattern("runtime", error_desc, iteration, error_desc)
+                self._add_failure_pattern(
+                    "runtime", error_desc, iteration, error_desc,
+                    parent_code=parent_code, child_code=child_code, code_diff=code_diff,
+                    parent_metrics=parent_metrics, child_metrics=child_metrics
+                )
 
         # Track performance regressions
         if self.config.include_performance_regressions:
-            child_metrics = getattr(result, "child_metrics", None)
-            parent = getattr(result, "parent", None)
             if child_metrics and parent and hasattr(parent, "metrics"):
                 regressions = self._detect_performance_regressions(
                     parent.metrics, child_metrics
                 )
                 for regression_desc in regressions:
                     self._add_failure_pattern(
-                        "performance_regression", regression_desc, iteration
+                        "performance_regression", regression_desc, iteration,
+                        parent_code=parent_code, child_code=child_code, code_diff=code_diff,
+                        parent_metrics=parent.metrics, child_metrics=child_metrics
                     )
 
     def _track_successes(
@@ -150,7 +181,17 @@ class GlobalLearnings:
             # Extract what changed
             changes = getattr(child_program, "metadata", {}).get("changes", "Unknown")
             if changes and changes != "Unknown":
-                self._add_success_pattern(changes, iteration, improvement)
+                # Extract code context
+                parent = getattr(result, "parent", None)
+                child_code = getattr(child_program, "code", None)
+                parent_code = getattr(parent, "code", None) if parent else None
+                code_diff = changes  # changes is already the diff summary
+
+                self._add_success_pattern(
+                    changes, iteration, improvement,
+                    parent_code=parent_code, child_code=child_code, code_diff=code_diff,
+                    parent_metrics=parent_metrics, child_metrics=child_metrics
+                )
 
     def _extract_syntax_errors(self, artifacts: Dict[str, Any]) -> List[str]:
         """Extract syntax errors from artifacts"""
@@ -272,12 +313,235 @@ class GlobalLearnings:
         # Lowercase for consistency
         return description.lower()
 
+    def _summarize_pattern_with_llm_sync(
+        self, pattern: Union[FailurePattern, SuccessPattern], is_failure: bool = True
+    ) -> str:
+        """
+        Use LLM to generate actionable guidance from a pattern with code context (synchronous)
+
+        Args:
+            pattern: The pattern to summarize
+            is_failure: Whether this is a failure pattern (vs success pattern)
+
+        Returns:
+            Natural language summary providing clear, actionable guidance
+        """
+        import asyncio
+
+        logger.debug(f"_summarize_pattern_with_llm_sync called for {'failure' if is_failure else 'success'}")
+
+        # Check if summarization is available
+        if not self.llm_ensemble:
+            logger.debug("No LLM ensemble available, returning raw description")
+            return pattern.description
+
+        # Check cache first
+        cache_key = f"{'fail' if is_failure else 'success'}:{pattern.description}:{pattern.count}"
+        if cache_key in self.summary_cache:
+            logger.debug(f"Using cached summary for pattern")
+            return self.summary_cache[cache_key]
+
+        logger.debug(f"No cache hit, will call LLM to generate summary")
+
+        # Build the same prompt as async version
+        if is_failure:
+            pattern_type = pattern.pattern_type
+            prompt = f"""You are analyzing code evolution patterns to help guide future changes.
+
+Pattern Type: {pattern_type}
+Raw Description: {pattern.description}
+Occurrences: {pattern.count} times (iterations {pattern.first_seen}-{pattern.last_seen})"""
+        else:
+            prompt = f"""You are analyzing code evolution patterns to help guide future changes.
+
+Raw Description: {pattern.description}
+Occurrences: {pattern.count} times
+Average Improvement: +{pattern.avg_improvement:.1%}"""
+
+        # Add code context if available
+        if pattern.code_diff and pattern.code_diff != "Full rewrite":
+            prompt += f"\n\nCode Changes:\n{pattern.code_diff}"
+        elif pattern.code_diff == "Full rewrite" and pattern.parent_code and pattern.child_code:
+            # For full rewrites, include both parent and child code
+            prompt += f"\n\nParent Code:\n{pattern.parent_code}\n\nChild Code:\n{pattern.child_code}"
+        else:
+            # No code context available - log warning
+            logger.warning(f"No code context available for pattern: {pattern.description[:100]}... (code_diff={pattern.code_diff}, has_parent={bool(pattern.parent_code)}, has_child={bool(pattern.child_code)})")
+
+        # Add metrics context if available
+        if pattern.parent_metrics and pattern.child_metrics:
+            metrics_str = "\n\nMetrics Change:"
+            metric_changes = []
+            for key in pattern.child_metrics:
+                if key in pattern.parent_metrics:
+                    parent_val = pattern.parent_metrics[key]
+                    child_val = pattern.child_metrics[key]
+                    if isinstance(parent_val, (int, float)) and isinstance(child_val, (int, float)):
+                        if parent_val != 0:
+                            change_pct = ((child_val - parent_val) / parent_val) * 100
+                            metric_changes.append((key, parent_val, child_val, abs(change_pct)))
+
+            metric_changes.sort(key=lambda x: x[3], reverse=True)
+            for key, parent_val, child_val, _ in metric_changes[:3]:
+                metrics_str += f"\n- {key}: {parent_val:.4f} → {child_val:.4f}"
+
+            if metric_changes:
+                prompt += metrics_str
+
+        if is_failure:
+            prompt += "\n\nGenerate a 2-sentence summary:\n1. First sentence: Describe what code change or pattern caused this failure (be specific about what happened in the code).\n2. Second sentence: State what to avoid or watch out for when making similar changes in the future."
+        else:
+            prompt += "\n\nGenerate a 2-sentence summary:\n1. First sentence: Describe what code change or pattern led to this improvement (be specific about what happened in the code).\n2. Second sentence: State what to apply or consider when making similar changes in the future."
+
+        try:
+            # Call LLM - need to handle running event loop
+            logger.debug(f"Calling llm_ensemble.generate_with_context with prompt of length {len(prompt)}")
+
+            # Helper function to run the async call
+            async def _call_llm():
+                return await self.llm_ensemble.generate_with_context(
+                    system_message="You are an expert code evolution advisor. Provide concise, actionable guidance.",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+            # Try to detect if there's a running event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Event loop is running, use thread pool
+                logger.debug("Event loop detected, using thread pool for LLM call")
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    summary = executor.submit(asyncio.run, _call_llm()).result()
+            except RuntimeError:
+                # No running event loop, use asyncio.run directly
+                logger.debug("No event loop running, using asyncio.run directly")
+                summary = asyncio.run(_call_llm())
+
+            logger.debug(f"LLM call successful, received summary: {summary[:200]}...")
+
+            # Clean up the summary
+            summary = summary.strip().strip('"').strip()
+
+            # Cache it
+            self.summary_cache[cache_key] = summary
+            logger.debug(f"Cached summary with key: {cache_key[:50]}...")
+
+            return summary
+        except Exception as e:
+            logger.warning(f"Failed to generate LLM summary: {e}")
+            return pattern.description
+
+    async def _summarize_pattern_with_llm(
+        self, pattern: Union[FailurePattern, SuccessPattern], is_failure: bool = True
+    ) -> str:
+        """
+        Use LLM to generate actionable guidance from a pattern with code context
+
+        Args:
+            pattern: The pattern to summarize
+            is_failure: Whether this is a failure pattern (vs success pattern)
+
+        Returns:
+            Natural language summary providing clear, actionable guidance
+        """
+        logger.debug(f"_summarize_pattern_with_llm called for {'failure' if is_failure else 'success'}")
+
+        # Check if summarization is available
+        if not self.llm_ensemble:
+            logger.debug("No LLM ensemble available, returning raw description")
+            # Fall back to raw description
+            return pattern.description
+
+        # Check cache first
+        cache_key = f"{'fail' if is_failure else 'success'}:{pattern.description}:{pattern.count}"
+        if cache_key in self.summary_cache:
+            logger.debug(f"Using cached summary for pattern")
+            return self.summary_cache[cache_key]
+
+        logger.debug(f"No cache hit, will call LLM to generate summary")
+
+        # Build prompt for LLM
+        if is_failure:
+            pattern_type = pattern.pattern_type
+            prompt = f"""You are helping guide code evolution. Convert this failure pattern into clear, actionable advice.
+
+Pattern Type: {pattern_type}
+Description: {pattern.description}
+Occurrences: {pattern.count} times (iterations {pattern.first_seen}-{pattern.last_seen})"""
+        else:
+            prompt = f"""You are helping guide code evolution. Convert this success pattern into clear, actionable advice.
+
+Description: {pattern.description}
+Occurrences: {pattern.count} times
+Average Improvement: +{pattern.avg_improvement:.1%}"""
+
+        # Add code context if available
+        if pattern.code_diff and pattern.code_diff != "Full rewrite":
+            prompt += f"\n\nCode Changes:\n{pattern.code_diff}"
+        elif pattern.code_diff == "Full rewrite" and pattern.parent_code and pattern.child_code:
+            # For full rewrites, include both parent and child code
+            prompt += f"\n\nParent Code:\n{pattern.parent_code}\n\nChild Code:\n{pattern.child_code}"
+        else:
+            # No code context available - log warning
+            logger.warning(f"No code context available for pattern: {pattern.description[:100]}... (code_diff={pattern.code_diff}, has_parent={bool(pattern.parent_code)}, has_child={bool(pattern.child_code)})")
+
+        # Add metrics context if available
+        if pattern.parent_metrics and pattern.child_metrics:
+            metrics_str = "\n\nMetrics Change:"
+            # Show top 3 most significant metric changes
+            metric_changes = []
+            for key in pattern.child_metrics:
+                if key in pattern.parent_metrics:
+                    parent_val = pattern.parent_metrics[key]
+                    child_val = pattern.child_metrics[key]
+                    if isinstance(parent_val, (int, float)) and isinstance(child_val, (int, float)):
+                        if parent_val != 0:
+                            change_pct = ((child_val - parent_val) / parent_val) * 100
+                            metric_changes.append((key, parent_val, child_val, abs(change_pct)))
+
+            # Sort by absolute change and take top 3
+            metric_changes.sort(key=lambda x: x[3], reverse=True)
+            for key, parent_val, child_val, _ in metric_changes[:3]:
+                metrics_str += f"\n- {key}: {parent_val:.4f} → {child_val:.4f}"
+
+            if metric_changes:
+                prompt += metrics_str
+
+        prompt += "\n\nGenerate 1-2 sentences of clear, actionable guidance that will help avoid this issue (for failures) or encourage this pattern (for successes). Be specific and practical."
+
+        try:
+            # Call LLM
+            logger.debug(f"Calling llm_ensemble.generate_with_context with prompt of length {len(prompt)}")
+            summary = await self.llm_ensemble.generate_with_context(
+                system_message="You are an expert code evolution advisor. Provide concise, actionable guidance.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            logger.debug(f"LLM call successful, received summary: {summary[:200]}...")
+
+            # Clean up the summary (remove quotes, extra whitespace)
+            summary = summary.strip().strip('"').strip()
+
+            # Cache it
+            self.summary_cache[cache_key] = summary
+            logger.debug(f"Cached summary with key: {cache_key[:50]}...")
+
+            return summary
+        except Exception as e:
+            logger.warning(f"Failed to generate LLM summary: {e}")
+            # Fall back to raw description
+            return pattern.description
+
     def _add_failure_pattern(
         self,
         pattern_type: str,
         description: str,
         iteration: int,
         example_error: Optional[str] = None,
+        parent_code: Optional[str] = None,
+        child_code: Optional[str] = None,
+        code_diff: Optional[str] = None,
+        parent_metrics: Optional[Dict[str, float]] = None,
+        child_metrics: Optional[Dict[str, float]] = None,
     ) -> None:
         """Add or update a failure pattern"""
         # Normalize description for better grouping
@@ -288,6 +552,7 @@ class GlobalLearnings:
             pattern = self.failure_patterns[key]
             pattern.count += 1
             pattern.last_seen = iteration
+            logger.debug(f"Updated failure pattern: {description} (count={pattern.count})")
         else:
             self.failure_patterns[key] = FailurePattern(
                 pattern_type=pattern_type,
@@ -296,10 +561,24 @@ class GlobalLearnings:
                 first_seen=iteration,
                 last_seen=iteration,
                 example_error=example_error,
+                parent_code=parent_code,
+                child_code=child_code,
+                code_diff=code_diff,
+                parent_metrics=parent_metrics,
+                child_metrics=child_metrics,
             )
+            logger.info(f"New failure pattern detected: {description} ({pattern_type})")
 
     def _add_success_pattern(
-        self, description: str, iteration: int, improvement: float
+        self,
+        description: str,
+        iteration: int,
+        improvement: float,
+        parent_code: Optional[str] = None,
+        child_code: Optional[str] = None,
+        code_diff: Optional[str] = None,
+        parent_metrics: Optional[Dict[str, float]] = None,
+        child_metrics: Optional[Dict[str, float]] = None,
     ) -> None:
         """Add or update a success pattern"""
         key = description
@@ -311,6 +590,10 @@ class GlobalLearnings:
             pattern.count += 1
             pattern.avg_improvement = total_improvement / pattern.count
             pattern.last_seen = iteration
+            logger.debug(
+                f"Updated success pattern: {description} "
+                f"(count={pattern.count}, avg_improvement={pattern.avg_improvement:.2%})"
+            )
         else:
             self.success_patterns[key] = SuccessPattern(
                 description=description,
@@ -318,6 +601,14 @@ class GlobalLearnings:
                 avg_improvement=improvement,
                 first_seen=iteration,
                 last_seen=iteration,
+                parent_code=parent_code,
+                child_code=child_code,
+                code_diff=code_diff,
+                parent_metrics=parent_metrics,
+                child_metrics=child_metrics,
+            )
+            logger.info(
+                f"New success pattern detected: {description} (+{improvement:.2%})"
             )
 
     def get_top_failures(self, max_count: Optional[int] = None) -> List[FailurePattern]:
@@ -352,7 +643,7 @@ class GlobalLearnings:
 
     def generate_prompt_section(self) -> str:
         """
-        Generate formatted section for prompt injection
+        Generate formatted section for prompt injection (with LLM summarization)
 
         Returns:
             Formatted string with learnings, or empty string if disabled or no learnings
@@ -360,6 +651,31 @@ class GlobalLearnings:
         if not self.config.enabled:
             return ""
 
+        sections = []
+
+        # Add failures section
+        if self.config.track_failures or self.config.track_both:
+            failures = self.get_top_failures()
+            if failures:
+                sections.append(self._format_failures_section_sync(failures))
+
+        # Add successes section
+        if self.config.track_successes or self.config.track_both:
+            successes = self.get_top_successes()
+            if successes:
+                sections.append(self._format_successes_section_sync(successes))
+
+        if not sections:
+            return ""
+
+        header = "## Evolution Insights (Global Learnings)"
+        if self.config.verbosity == "minimal":
+            header = "## Common Patterns"
+
+        return f"{header}\n\n" + "\n\n".join(sections)
+
+    def _generate_prompt_section_sync(self) -> str:
+        """Synchronous version without LLM summarization"""
         sections = []
 
         # Add failures section
@@ -377,58 +693,218 @@ class GlobalLearnings:
         if not sections:
             return ""
 
-        # Combine sections
         header = "## Evolution Insights (Global Learnings)"
         if self.config.verbosity == "minimal":
             header = "## Common Patterns"
 
         return f"{header}\n\n" + "\n\n".join(sections)
 
-    def _format_failures_section(self, failures: List[FailurePattern]) -> str:
-        """Format failures section based on verbosity"""
+    async def _generate_prompt_section_async(self) -> str:
+        """Async version with LLM summarization"""
+        sections = []
+
+        # Add failures section
+        if self.config.track_failures or self.config.track_both:
+            failures = self.get_top_failures()
+            if failures:
+                section = await self._format_failures_section_async(failures)
+                sections.append(section)
+
+        # Add successes section
+        if self.config.track_successes or self.config.track_both:
+            successes = self.get_top_successes()
+            if successes:
+                section = await self._format_successes_section_async(successes)
+                sections.append(section)
+
+        if not sections:
+            return ""
+
+        header = "## Evolution Insights (Global Learnings)"
+        if self.config.verbosity == "minimal":
+            header = "## Common Patterns"
+
+        return f"{header}\n\n" + "\n\n".join(sections)
+
+    def _format_failures_section_sync(self, failures: List[FailurePattern]) -> str:
+        """Format failures section with synchronous LLM summarization"""
+        logger.debug(f"_format_failures_section_sync called with {len(failures)} failures")
+        logger.debug(f"use_llm_summarization={self.config.use_llm_summarization}, llm_ensemble={'available' if self.llm_ensemble else 'None'}")
         lines = []
 
         if self.config.verbosity == "minimal":
             lines.append("### Avoid:")
             for f in failures:
-                lines.append(f"- {f.description} (seen {f.count}x)")
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    logger.debug(f"Calling LLM to summarize failure pattern: {f.description[:50]}...")
+                    summary = self._summarize_pattern_with_llm_sync(f, is_failure=True)
+                    logger.debug(f"LLM summary received: {summary[:100]}...")
+                    lines.append(f"- {summary} (seen {f.count}x)")
+                else:
+                    logger.debug(f"Skipping LLM, using raw description for: {f.description[:50]}...")
+                    lines.append(f"- {f.description} (seen {f.count}x)")
         elif self.config.verbosity == "concise":
             lines.append("### Common Pitfalls:")
             for f in failures:
                 icon = "❌" if f.pattern_type == "syntax" else "⚠️"
-                lines.append(f"{icon} {f.description} (seen {f.count}x)")
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    logger.debug(f"Calling LLM to summarize failure pattern: {f.description[:50]}...")
+                    summary = self._summarize_pattern_with_llm_sync(f, is_failure=True)
+                    logger.debug(f"LLM summary received: {summary[:100]}...")
+                    lines.append(f"{icon} (seen {f.count}x) {summary}")
+                else:
+                    logger.debug(f"Skipping LLM, using raw description for: {f.description[:50]}...")
+                    lines.append(f"{icon} (seen {f.count}x) {f.description}")
         else:  # detailed
             lines.append("### Common Pitfalls (from recent evolution):")
             for f in failures:
                 icon = "❌" if f.pattern_type == "syntax" else "⚠️"
-                lines.append(
-                    f"{icon} **{f.pattern_type.replace('_', ' ').title()}**: "
-                    f"{f.description} (seen {f.count}x, last at iteration {f.last_seen})"
-                )
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    logger.debug(f"Calling LLM to summarize failure pattern: {f.description[:50]}...")
+                    summary = self._summarize_pattern_with_llm_sync(f, is_failure=True)
+                    logger.debug(f"LLM summary received: {summary[:100]}...")
+                    lines.append(
+                        f"{icon} **{f.pattern_type.replace('_', ' ').title()}**: "
+                        f"{summary} (seen {f.count}x, last at iteration {f.last_seen})"
+                    )
+                else:
+                    logger.debug(f"Skipping LLM, using raw description for: {f.description[:50]}...")
+                    lines.append(
+                        f"{icon} **{f.pattern_type.replace('_', ' ').title()}**: "
+                        f"{f.description} (seen {f.count}x, last at iteration {f.last_seen})"
+                    )
 
         return "\n".join(lines)
 
-    def _format_successes_section(self, successes: List[SuccessPattern]) -> str:
-        """Format successes section based on verbosity"""
+    def _format_successes_section_sync(self, successes: List[SuccessPattern]) -> str:
+        """Format successes section with synchronous LLM summarization"""
         lines = []
 
         if self.config.verbosity == "minimal":
             lines.append("### Successful patterns:")
             for s in successes:
-                lines.append(f"- {s.description} (seen {s.count}x)")
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    summary = self._summarize_pattern_with_llm_sync(s, is_failure=False)
+                    lines.append(f"- {summary} (seen {s.count}x)")
+                else:
+                    lines.append(f"- {s.description} (seen {s.count}x)")
         elif self.config.verbosity == "concise":
             lines.append("### Successful Patterns:")
             for s in successes:
-                lines.append(
-                    f"✅ {s.description} (seen {s.count}x, avg improvement: +{s.avg_improvement:.2%})"
-                )
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    summary = self._summarize_pattern_with_llm_sync(s, is_failure=False)
+                    lines.append(
+                        f"✅ {summary} (seen {s.count}x, avg improvement: +{s.avg_improvement:.2%})"
+                    )
+                else:
+                    lines.append(
+                        f"✅ {s.description} (seen {s.count}x, avg improvement: +{s.avg_improvement:.2%})"
+                    )
         else:  # detailed
             lines.append("### Successful Patterns (from recent evolution):")
             for s in successes:
-                lines.append(
-                    f"✅ **Success**: {s.description} (seen {s.count}x, "
-                    f"avg improvement: +{s.avg_improvement:.2%}, last at iteration {s.last_seen})"
-                )
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    summary = self._summarize_pattern_with_llm_sync(s, is_failure=False)
+                    lines.append(
+                        f"✅ **Success**: {summary} (seen {s.count}x, "
+                        f"avg improvement: +{s.avg_improvement:.2%}, last at iteration {s.last_seen})"
+                    )
+                else:
+                    lines.append(
+                        f"✅ **Success**: {s.description} (seen {s.count}x, "
+                        f"avg improvement: +{s.avg_improvement:.2%}, last at iteration {s.last_seen})"
+                    )
+
+        return "\n".join(lines)
+
+    async def _format_failures_section_async(self, failures: List[FailurePattern]) -> str:
+        """Format failures section with LLM summarization"""
+        logger.debug(f"_format_failures_section_async called with {len(failures)} failures")
+        logger.debug(f"use_llm_summarization={self.config.use_llm_summarization}, llm_ensemble={'available' if self.llm_ensemble else 'None'}")
+        lines = []
+
+        if self.config.verbosity == "minimal":
+            lines.append("### Avoid:")
+            for f in failures:
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    logger.debug(f"Calling LLM to summarize failure pattern: {f.description[:50]}...")
+                    summary = await self._summarize_pattern_with_llm(f, is_failure=True)
+                    logger.debug(f"LLM summary received: {summary[:100]}...")
+                    lines.append(f"- {summary} (seen {f.count}x)")
+                else:
+                    logger.debug(f"Skipping LLM, using raw description for: {f.description[:50]}...")
+                    lines.append(f"- {f.description} (seen {f.count}x)")
+        elif self.config.verbosity == "concise":
+            lines.append("### Common Pitfalls:")
+            for f in failures:
+                icon = "❌" if f.pattern_type == "syntax" else "⚠️"
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    logger.debug(f"Calling LLM to summarize failure pattern: {f.description[:50]}...")
+                    summary = await self._summarize_pattern_with_llm(f, is_failure=True)
+                    logger.debug(f"LLM summary received: {summary[:100]}...")
+                    lines.append(f"{icon} {summary} (seen {f.count}x)")
+                else:
+                    logger.debug(f"Skipping LLM, using raw description for: {f.description[:50]}...")
+                    lines.append(f"{icon} {f.description} (seen {f.count}x)")
+        else:  # detailed
+            lines.append("### Common Pitfalls (from recent evolution):")
+            for f in failures:
+                icon = "❌" if f.pattern_type == "syntax" else "⚠️"
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    logger.debug(f"Calling LLM to summarize failure pattern: {f.description[:50]}...")
+                    summary = await self._summarize_pattern_with_llm(f, is_failure=True)
+                    logger.debug(f"LLM summary received: {summary[:100]}...")
+                    lines.append(
+                        f"{icon} **{f.pattern_type.replace('_', ' ').title()}**: "
+                        f"{summary} (seen {f.count}x, last at iteration {f.last_seen})"
+                    )
+                else:
+                    logger.debug(f"Skipping LLM, using raw description for: {f.description[:50]}...")
+                    lines.append(
+                        f"{icon} **{f.pattern_type.replace('_', ' ').title()}**: "
+                        f"{f.description} (seen {f.count}x, last at iteration {f.last_seen})"
+                    )
+
+        return "\n".join(lines)
+
+    async def _format_successes_section_async(self, successes: List[SuccessPattern]) -> str:
+        """Format successes section with LLM summarization"""
+        lines = []
+
+        if self.config.verbosity == "minimal":
+            lines.append("### Successful patterns:")
+            for s in successes:
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    summary = await self._summarize_pattern_with_llm(s, is_failure=False)
+                    lines.append(f"- {summary} (seen {s.count}x)")
+                else:
+                    lines.append(f"- {s.description} (seen {s.count}x)")
+        elif self.config.verbosity == "concise":
+            lines.append("### Successful Patterns:")
+            for s in successes:
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    summary = await self._summarize_pattern_with_llm(s, is_failure=False)
+                    lines.append(
+                        f"✅ {summary} (seen {s.count}x, avg improvement: +{s.avg_improvement:.2%})"
+                    )
+                else:
+                    lines.append(
+                        f"✅ {s.description} (seen {s.count}x, avg improvement: +{s.avg_improvement:.2%})"
+                    )
+        else:  # detailed
+            lines.append("### Successful Patterns (from recent evolution):")
+            for s in successes:
+                if self.config.use_llm_summarization and self.llm_ensemble:
+                    summary = await self._summarize_pattern_with_llm(s, is_failure=False)
+                    lines.append(
+                        f"✅ **Success**: {summary} (seen {s.count}x, "
+                        f"avg improvement: +{s.avg_improvement:.2%}, last at iteration {s.last_seen})"
+                    )
+                else:
+                    lines.append(
+                        f"✅ **Success**: {s.description} (seen {s.count}x, "
+                        f"avg improvement: +{s.avg_improvement:.2%}, last at iteration {s.last_seen})"
+                    )
 
         return "\n".join(lines)
 

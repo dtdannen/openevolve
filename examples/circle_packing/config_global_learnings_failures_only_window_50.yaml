@@ -3,7 +3,7 @@
 # Global learnings enabled with failure-only tracking, window_size=50
 max_iterations: 100  # Increased iterations
 checkpoint_interval: 10
-log_level: "INFO"
+log_level: "DEBUG"
 
 # LLM configuration
 llm:
@@ -60,7 +60,7 @@ global_learnings:
   track_successes: false      # Don't track successes (lower token cost)
   window_size: 50             # Aggregate patterns from last 50 iterations
   max_learnings: 5            # Show top 5 patterns in prompts
-  min_failure_count: 3        # Need 3+ occurrences to report a pattern
+  min_failure_count: 1        # Need 1+ occurrences to report a pattern
   include_syntax_errors: true
   include_runtime_errors: true
   include_performance_regressions: true

@@ -192,8 +192,11 @@ class OpenEvolve:
         else:
             self.evolution_tracer = None
 
-        # Initialize global learnings
-        self.global_learnings = GlobalLearnings(self.config.global_learnings)
+        # Initialize global learnings (pass LLM ensemble for summarization)
+        self.global_learnings = GlobalLearnings(
+            self.config.global_learnings,
+            llm_ensemble=self.llm_ensemble
+        )
         if self.config.global_learnings.enabled:
             logger.info("Global learnings system enabled")
 

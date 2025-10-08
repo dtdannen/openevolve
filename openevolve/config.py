@@ -371,6 +371,10 @@ class GlobalLearningsConfig:
     # Verbosity
     verbosity: str = "concise"        # "concise", "detailed", "minimal"
 
+    # LLM-based summarization
+    use_llm_summarization: bool = True  # Use LLM to generate natural language summaries
+    cache_summaries: bool = True        # Cache summaries to avoid redundant LLM calls
+
 
 @dataclass
 class Config:

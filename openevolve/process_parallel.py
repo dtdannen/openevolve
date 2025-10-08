@@ -400,7 +400,20 @@ class ProcessParallelController:
 
         # Include global learnings section if enabled
         if self.global_learnings and self.global_learnings.config.enabled:
-            snapshot["global_learnings"] = self.global_learnings.generate_prompt_section()
+            learnings_section = self.global_learnings.generate_prompt_section()
+            snapshot["global_learnings"] = learnings_section
+
+            # Log learnings summary
+            if learnings_section:
+                summary = self.global_learnings.get_summary()
+                logger.info(
+                    f"Global learnings snapshot: {summary['top_failures']} failures, "
+                    f"{summary['top_successes']} successes in prompt "
+                    f"(tracked {summary['total_failures']} total failures, "
+                    f"{summary['total_successes']} total successes)"
+                )
+                # Log the actual learnings section being injected
+                logger.debug(f"Injecting global learnings into prompt:\n{learnings_section}")
 
         # Include artifacts for programs that might be selected
         # IMPORTANT: This limits artifacts (execution outputs/errors) to first 100 programs only.
