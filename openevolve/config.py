@@ -316,7 +316,7 @@ class EvaluatorConfig:
 @dataclass
 class EvolutionTraceConfig:
     """Configuration for evolution trace logging"""
-    
+
     enabled: bool = False
     format: str = "jsonl"  # Options: "jsonl", "json", "hdf5"
     include_code: bool = False
@@ -324,6 +324,17 @@ class EvolutionTraceConfig:
     output_path: Optional[str] = None
     buffer_size: int = 10
     compress: bool = False
+
+
+@dataclass
+class DeepResearchConfig:
+    """Configuration for Deep Research system prompt augmentation"""
+
+    enabled: bool = False
+    augmentation_interval: int = 10  # Every N iterations
+    model: str = "o3-deep-research-2025-06-26"  # or o4-mini-deep-research-2025-06-26
+    timeout: int = 600  # 10 minutes max
+    max_tokens: int = 16000  # Deep research output limit
 
 
 @dataclass
@@ -345,6 +356,7 @@ class Config:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     evaluator: EvaluatorConfig = field(default_factory=EvaluatorConfig)
     evolution_trace: EvolutionTraceConfig = field(default_factory=EvolutionTraceConfig)
+    deep_research: DeepResearchConfig = field(default_factory=DeepResearchConfig)
 
     # Evolution settings
     diff_based_evolution: bool = True
@@ -370,7 +382,7 @@ class Config:
 
         # Update top-level fields
         for key, value in config_dict.items():
-            if key not in ["llm", "prompt", "database", "evaluator", "evolution_trace"] and hasattr(config, key):
+            if key not in ["llm", "prompt", "database", "evaluator", "evolution_trace", "deep_research"] and hasattr(config, key):
                 setattr(config, key, value)
 
         # Update nested configs
@@ -395,6 +407,8 @@ class Config:
             config.evaluator = EvaluatorConfig(**config_dict["evaluator"])
         if "evolution_trace" in config_dict:
             config.evolution_trace = EvolutionTraceConfig(**config_dict["evolution_trace"])
+        if "deep_research" in config_dict:
+            config.deep_research = DeepResearchConfig(**config_dict["deep_research"])
 
         return config
 

@@ -1,0 +1,58 @@
+# Configuration for circle packing with Deep Research system prompt augmentation
+max_iterations: 30  # Short test run
+checkpoint_interval: 10
+log_level: "INFO"
+
+# LLM configuration
+llm:
+  primary_model: "google/gemini-2.0-flash-001"
+  primary_model_weight: 0.8
+  secondary_model: "anthropic/claude-3.7-sonnet"
+  secondary_model_weight: 0.2
+  api_base: "https://openrouter.ai/api/v1"
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 8192
+  timeout: 600
+
+# Prompt configuration
+prompt:
+  system_message: |
+    You are an expert mathematician specializing in circle packing problems and computational geometry. Your task is to improve a constructor function that directly produces a specific arrangement of 26 circles in a unit square, maximizing the sum of their radii.
+
+    Key geometric insights:
+    - Circle packings often follow hexagonal patterns in the densest regions
+    - Maximum density for infinite circle packing is pi/(2*sqrt(3)) ≈ 0.9069
+    - Edge effects make square container packing harder than infinite packing
+
+    Focus on designing an explicit constructor that places each circle in a specific position.
+  num_top_programs: 3
+  use_template_stochasticity: true
+
+# Database configuration
+database:
+  population_size: 60
+  archive_size: 25
+  num_islands: 4
+  elite_selection_ratio: 0.3
+  exploitation_ratio: 0.7
+
+# Evaluator configuration
+evaluator:
+  timeout: 60
+  cascade_evaluation: true
+  cascade_thresholds: [0.5, 0.75]
+  parallel_evaluations: 4
+  use_llm_feedback: false
+
+# Evolution settings
+diff_based_evolution: false
+allow_full_rewrites: true
+
+# Deep Research configuration (NEW!)
+deep_research:
+  enabled: true
+  augmentation_interval: 10  # Augment every 10 iterations
+  model: "o3-deep-research-2025-06-26"  # Or "o4-mini-deep-research-2025-06-26" for faster/cheaper
+  timeout: 600  # 10 minutes max per research call
+  max_tokens: 16000

@@ -275,12 +275,13 @@ def _run_iteration_worker(
 class ProcessParallelController:
     """Controller for process-based parallel evolution"""
 
-    def __init__(self, config: Config, evaluation_file: str, database: ProgramDatabase, evolution_tracer=None, file_suffix: str = ".py"):
+    def __init__(self, config: Config, evaluation_file: str, database: ProgramDatabase, evolution_tracer=None, file_suffix: str = ".py", output_dir: Optional[str] = None):
         self.config = config
         self.evaluation_file = evaluation_file
         self.database = database
         self.evolution_tracer = evolution_tracer
         self.file_suffix = file_suffix
+        self.output_dir = output_dir
 
         self.executor: Optional[ProcessPoolExecutor] = None
         self.shutdown_event = mp.Event()
@@ -300,6 +301,27 @@ class ProcessParallelController:
 
         logger.info(f"Initialized process parallel controller with {self.num_workers} workers")
         logger.info(f"Worker-to-island mapping: {self.worker_island_map}")
+
+        # Initialize system prompt augmenter if Deep Research is enabled
+        self.prompt_augmenter = None
+        if config.deep_research and config.deep_research.enabled and output_dir:
+            from openevolve.system_prompt_augmenter import SystemPromptAugmenter
+            from openevolve.llm.ensemble import LLMEnsemble
+
+            # Create LLM ensemble for augmentation (reuse config)
+            llm_ensemble = LLMEnsemble(config.llm.models)
+
+            self.prompt_augmenter = SystemPromptAugmenter(
+                config.deep_research,
+                output_dir,
+                llm_ensemble,
+                language=config.language or "python",
+            )
+
+            # Save base prompt as version 0
+            if config.prompt.system_message:
+                self.prompt_augmenter.save_prompt_version(config.prompt.system_message, 0)
+                logger.info("Deep Research system prompt augmentation enabled")
 
     def _serialize_config(self, config: Config) -> dict:
         """Serialize config object to a dictionary that can be pickled"""
@@ -579,6 +601,29 @@ class ProcessParallelController:
                             f"🌟 New best solution found at iteration {completed_iteration}: "
                             f"{child_program.id}"
                         )
+
+                    # Check if we should augment system prompt with Deep Research
+                    if (
+                        self.prompt_augmenter is not None
+                        and completed_iteration > 0
+                        and completed_iteration % self.config.deep_research.augmentation_interval == 0
+                    ):
+                        logger.info(
+                            f"🔬 Deep Research augmentation interval reached at iteration {completed_iteration}"
+                        )
+                        try:
+                            # Run augmentation (blocking)
+                            new_prompt = await self.prompt_augmenter.run_augmentation(
+                                completed_iteration,
+                                self.database,
+                                self.config.prompt.system_message
+                            )
+
+                            # Update config with augmented prompt
+                            self.config.prompt.system_message = new_prompt
+                            logger.info(f"✅ System prompt augmented and saved at iteration {completed_iteration}")
+                        except Exception as e:
+                            logger.error(f"Failed to augment system prompt: {e}", exc_info=True)
 
                     # Checkpoint callback
                     # Don't checkpoint at iteration 0 (that's just the initial program)
