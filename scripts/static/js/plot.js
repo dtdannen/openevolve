@@ -78,6 +78,8 @@ function updatePlot(data) {
     // Filter data points that have the selected metric
     const validData = data.filter(d =>
         d.metrics &&
+        typeof d.metrics === 'object' &&
+        !Array.isArray(d.metrics) &&
         typeof d.metrics[metric] === 'number' &&
         isFinite(d.metrics[metric])
     );
@@ -252,7 +254,8 @@ function updatePlot(data) {
         .attr('stroke-width', 2)
         .style('cursor', 'pointer');
 
-    // Add tooltips
+    // Add tooltips (reuse existing or create new)
+    d3.select('#view-plot .plot-tooltip').remove();
     const tooltip = d3.select('#view-plot')
         .append('div')
         .attr('class', 'plot-tooltip')

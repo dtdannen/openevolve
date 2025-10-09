@@ -73,7 +73,7 @@ def load_iteration_metrics_from_checkpoints(checkpoint_folder):
                     "iteration": iteration,
                     "metrics": metrics
                 })
-        except (json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, KeyError, IOError) as e:
             logger.debug(f"Error loading best_program_info from {ckpt_dir}: {e}")
             continue
 

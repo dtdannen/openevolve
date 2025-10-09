@@ -3,6 +3,7 @@
 import { sidebarSticky, showSidebarContent } from './sidebar.js';
 import { updateListSidebarLayout, renderNodeList } from './list.js';
 import { renderGraph, g, getNodeRadius, animateGraphNodeAttributes } from './graph.js';
+import { renderPlot } from './plot.js';
 
 export let allNodeData = [];
 let metricMinMax = {};
@@ -114,8 +115,8 @@ function loadAndRenderData(data) {
         }
     }
     // Render plot if iteration metrics are available
-    if (window.renderPlot && data.iteration_metrics) {
-        window.renderPlot(data.iteration_metrics);
+    if (data.iteration_metrics) {
+        renderPlot(data.iteration_metrics);
     }
 }
 
