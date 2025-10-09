@@ -1,6 +1,7 @@
 # Configuration for blocksworld planner evolution
 max_iterations: 100
 checkpoint_interval: 10
+log_level: "DEBUG"
 
 # LLM configuration
 llm:
@@ -67,3 +68,18 @@ evaluator:
 # Evolution settings
 diff_based_evolution: true
 max_code_length: 30000
+
+# Global Learnings Configuration
+# Tracks common failures across all islands to help LLM avoid repeated mistakes
+global_learnings:
+  enabled: true
+  track_failures: true        # Track syntax/runtime errors and performance regressions
+  track_successes: false      # Don't track successes (lower token cost)
+  window_size: 100             # Aggregate patterns from last 50 iterations
+  max_learnings: 10            # Show top 5 patterns in prompts
+  min_failure_count: 1        # Need 1+ occurrences to report a pattern
+  include_syntax_errors: true
+  include_runtime_errors: true
+  include_performance_regressions: true
+  inject_in_system_prompt: true  # Add learnings to system message
+  verbosity: "concise"        # Format: "minimal", "concise", or "detailed"
