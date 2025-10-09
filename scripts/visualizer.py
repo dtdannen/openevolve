@@ -26,12 +26,72 @@ def find_latest_checkpoint(base_folder):
     return checkpoint_folders[0]
 
 
+def load_iteration_metrics_from_checkpoints(checkpoint_folder):
+    """
+    Scan for sibling checkpoints and extract best program metrics per iteration.
+    Returns a list of {iteration, metrics} dictionaries sorted by iteration.
+    """
+    iteration_metrics = []
+
+    # Get parent directory (e.g., "checkpoints/")
+    parent_dir = os.path.dirname(checkpoint_folder)
+    if not parent_dir or not os.path.exists(parent_dir):
+        return iteration_metrics
+
+    # Find all sibling checkpoint directories
+    try:
+        all_items = os.listdir(parent_dir)
+    except (OSError, PermissionError):
+        return iteration_metrics
+
+    checkpoint_dirs = []
+    for item in all_items:
+        item_path = os.path.join(parent_dir, item)
+        if os.path.isdir(item_path) and item.startswith("checkpoint_"):
+            checkpoint_dirs.append(item_path)
+
+    if not checkpoint_dirs:
+        # No sibling checkpoints found
+        return iteration_metrics
+
+    # Extract iteration number and metrics from each checkpoint
+    for ckpt_dir in checkpoint_dirs:
+        best_info_path = os.path.join(ckpt_dir, "best_program_info.json")
+        if not os.path.exists(best_info_path):
+            continue
+
+        try:
+            with open(best_info_path, "r") as f:
+                best_info = json.load(f)
+
+            # Extract iteration number (prefer current_iteration, fallback to iteration)
+            iteration = best_info.get("current_iteration", best_info.get("iteration", 0))
+            metrics = best_info.get("metrics", {})
+
+            if metrics:
+                iteration_metrics.append({
+                    "iteration": iteration,
+                    "metrics": metrics
+                })
+        except (json.JSONDecodeError, KeyError, IOError) as e:
+            logger.debug(f"Error loading best_program_info from {ckpt_dir}: {e}")
+            continue
+
+    # Sort by iteration number
+    iteration_metrics.sort(key=lambda x: x["iteration"])
+
+    if iteration_metrics:
+        logger.info(f"Loaded {len(iteration_metrics)} iteration metric snapshots")
+
+    return iteration_metrics
+
+
 def load_evolution_data(checkpoint_folder):
     meta_path = os.path.join(checkpoint_folder, "metadata.json")
     programs_dir = os.path.join(checkpoint_folder, "programs")
     if not os.path.exists(meta_path) or not os.path.exists(programs_dir):
         logger.info(f"Missing metadata.json or programs dir in {checkpoint_folder}")
-        return {"archive": [], "nodes": [], "edges": [], "checkpoint_dir": checkpoint_folder}
+        return {"archive": [], "nodes": [], "edges": [], "checkpoint_dir": checkpoint_folder, "iteration_metrics": []}
     with open(meta_path) as f:
         meta = json.load(f)
 
@@ -74,11 +134,16 @@ def load_evolution_data(checkpoint_folder):
             edges.append({"source": parent_id, "target": prog["id"]})
 
     logger.info(f"Loaded {len(nodes)} nodes and {len(edges)} edges from {checkpoint_folder}")
+
+    # Load iteration metrics from all sibling checkpoints
+    iteration_metrics = load_iteration_metrics_from_checkpoints(checkpoint_folder)
+
     return {
         "archive": meta.get("archive", []),
         "nodes": nodes,
         "edges": edges,
         "checkpoint_dir": checkpoint_folder,
+        "iteration_metrics": iteration_metrics,
     }
 
 

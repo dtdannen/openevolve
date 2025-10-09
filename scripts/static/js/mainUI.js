@@ -3,11 +3,12 @@ import { selectedProgramId } from './main.js';
 import { selectProgram } from './graph.js';
 import { showSidebarContent } from './sidebar.js';
 
-const darkToggleContainer = document.getElementById('darkmode-toggle').parentElement;
 const darkToggleInput = document.getElementById('darkmode-toggle');
 const darkToggleLabel = document.getElementById('darkmode-label');
-
-if (!document.getElementById('custom-dark-toggle')) {
+if (!darkToggleInput || !darkToggleLabel) {
+    console.warn('Dark mode toggle elements not found, skipping custom toggle creation');
+} else if (!document.getElementById('custom-dark-toggle')) {
+    const darkToggleContainer = darkToggleInput.parentElement;
     const wrapper = document.createElement('label');
     wrapper.className = 'toggle-switch';
     wrapper.id = 'custom-dark-toggle';
@@ -28,7 +29,7 @@ if (!document.getElementById('custom-dark-toggle')) {
 }
 
 // Tab switching logic
-const tabs = ["branching", "performance", "list"];
+const tabs = ["branching", "performance", "list", "plot"];
 tabs.forEach(tab => {
     document.getElementById(`tab-${tab}`).addEventListener('click', function() {
         tabs.forEach(t => {
@@ -47,7 +48,7 @@ tabs.forEach(tab => {
             }
         }
         // Disable page scroll for graph tabs
-        if (tab === 'branching' || tab === 'performance') {
+        if (tab === 'branching' || tab === 'performance' || tab === 'plot') {
             document.body.style.overflow = 'hidden';
         } else {
             document.body.style.overflow = '';
