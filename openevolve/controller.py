@@ -305,7 +305,8 @@ class OpenEvolve:
         try:
             self.parallel_controller = ProcessParallelController(
                 self.config, self.evaluation_file, self.database, self.evolution_tracer,
-                file_suffix=self.config.file_suffix
+                file_suffix=self.config.file_suffix,
+                output_dir=self.output_dir
             )
 
             # Set up signal handlers for graceful shutdown

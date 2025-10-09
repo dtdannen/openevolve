@@ -132,6 +132,48 @@ INSPIRATION_PROGRAM_TEMPLATE = """### Inspiration {program_number} (Score: {scor
 Unique approach: {unique_features}
 """
 
+# Template for Deep Research query
+DEEP_RESEARCH_QUERY_TEMPLATE = """Research Query: How can we improve code evolution strategies for {language} programs?
+
+Current Context:
+- Iteration: {iteration} of evolution completed
+- Global Learnings: {learnings_summary}
+
+Base System Prompt Being Used:
+{base_prompt}
+
+Please research best practices, common pitfalls, and optimization strategies for evolving {language} code that align with our current findings.
+
+Focus on actionable insights that can be added to our system prompt to improve future iterations."""
+
+# Template for augmentation meta-prompt
+AUGMENTATION_META_PROMPT_TEMPLATE = """You are a meta-optimizer improving system prompts for code evolution.
+
+Original Base Prompt:
+---
+{base_prompt}
+---
+
+Deep Research Results:
+---
+{research_results}
+---
+
+Global Learnings (iteration {iteration}):
+{learnings_summary}
+
+Task: Generate a NEW SECTION to APPEND to the base prompt containing insights from deep research.
+
+Requirements:
+- Concise (max 200 words)
+- Use bullet points or numbered lists
+- Do NOT repeat existing content from base prompt
+- Focus on actionable guidance
+
+Output format:
+## Deep Research Insights (Added at iteration {iteration}):
+[your insights here]"""
+
 # Template for evaluating a program via an LLM
 EVALUATION_TEMPLATE = """Evaluate the following code on a scale of 0.0 to 1.0 for the following metrics:
 1. Readability: How easy is the code to read and understand?
@@ -160,6 +202,8 @@ DEFAULT_TEMPLATES = {
     "evaluator_system_message": BASE_EVALUATOR_SYSTEM_TEMPLATE,
     "diff_user": DIFF_USER_TEMPLATE,
     "full_rewrite_user": FULL_REWRITE_USER_TEMPLATE,
+    "deep_research_query": DEEP_RESEARCH_QUERY_TEMPLATE,
+    "augmentation_meta_prompt": AUGMENTATION_META_PROMPT_TEMPLATE,
     "evolution_history": EVOLUTION_HISTORY_TEMPLATE,
     "previous_attempt": PREVIOUS_ATTEMPT_TEMPLATE,
     "top_program": TOP_PROGRAM_TEMPLATE,
