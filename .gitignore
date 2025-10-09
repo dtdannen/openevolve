@@ -57,3 +57,7 @@ problems
 papers/data
 papers/.env
 .trees
+examples/circle_packing/baseline_run_*
+examples/blocksworld/baseline_run_11
+examples/blocksworld/baseline_run_12
+examples/blocksworld/baseline_run_13
